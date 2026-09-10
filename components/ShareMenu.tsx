@@ -1,13 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Doc, Palette } from "@/lib/tokens";
 import { shareLink } from "@/lib/share";
+import { readImage } from "@/lib/image";
 import { Icon } from "./M3Node";
 import { t, useLang } from "@/lib/i18n";
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
+/** screenshots a draft may carry; more would mostly cost tokens */
+const MAX_IMAGES = 4;
 
 /** the app's own URL without any hash, and the agent guide beside it */
 const appUrl = () => `${window.location.origin}${BASE}/`;
@@ -50,13 +54,17 @@ const Beta = ({ p }: { p: Palette }) => (
 );
 
 /** Ask an AI (beta): write the idea and have the author's own model draft it, or copy the
- *  instruction for a coding agent. The title row carries a link to the design as it is now. */
+ *  instruction for a coding agent. Screenshots of an existing app can ride along for the
+ *  model to replicate. The title row carries a link to the design as it is now. */
 export function ShareDialog({
   p,
   doc,
   aiReady,
   idea,
   onIdea,
+  images,
+  onImages,
+  noVision,
   open,
   onClose,
   onDraft,
@@ -68,15 +76,21 @@ export function ShareDialog({
   /** what to build, kept by the page so a failed draft does not lose it */
   idea: string;
   onIdea: (v: string) => void;
+  /** screenshots to replicate, as data URLs; kept by the page like the idea */
+  images: string[];
+  onImages: (v: string[]) => void;
+  /** the chosen provider is not known to read images */
+  noVision?: boolean;
   open: boolean;
   onClose: () => void;
-  /** the idea, for the author's own model to draft */
-  onDraft: (idea: string) => void;
+  /** the idea and screenshots, for the author's own model to draft */
+  onDraft: (idea: string, images: string[]) => void;
   /** opens the AI settings so a key can be entered */
   onSetupAi: () => void;
 }) {
   const lang = useLang();
   const [copied, setCopied] = useState<"ask" | "link" | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   useEffect(() => {
     if (!copied) return;
     const id = setTimeout(() => setCopied(null), copied === "ask" ? 4000 : 1400);
@@ -111,6 +125,23 @@ export function ShareDialog({
       await navigator.clipboard.writeText(await shareLink(doc, appUrl()));
       setCopied("link");
     } catch {}
+  };
+
+  /* picked or pasted files become downscaled data URLs; files that are not images, or that
+     would exceed the cap, are dropped quietly */
+  const addFiles = async (files: Iterable<File>) => {
+    const room = MAX_IMAGES - images.length;
+    const picked = [...files].filter((f) => f.type.startsWith("image/")).slice(0, Math.max(0, room));
+    if (!picked.length) return;
+    const read = await Promise.all(picked.map((f) => readImage(f).catch(() => null)));
+    const next = read.filter((s): s is string => s !== null);
+    if (next.length) onImages([...images, ...next]);
+  };
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files = [...e.clipboardData.items].filter((it) => it.kind === "file").map((it) => it.getAsFile()).filter((f): f is File => f !== null);
+    if (!files.some((f) => f.type.startsWith("image/"))) return;
+    e.preventDefault();
+    void addFiles(files);
   };
 
   /* a connected pair, the way the canvas draws connected buttons: outer corners round, inner ones tight */
@@ -192,6 +223,7 @@ export function ShareDialog({
             <textarea
               value={idea}
               onChange={(e) => onIdea(e.target.value)}
+              onPaste={onPaste}
               placeholder={t("askAiIdea", lang)}
               rows={4}
               autoFocus
@@ -211,9 +243,76 @@ export function ShareDialog({
                 resize: "none",
               }}
             />
+            {/* the screenshots row: an add button, then a thumbnail per picture with its own remove */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                multiple
+                hidden
+                onChange={(e) => {
+                  void addFiles(e.target.files ?? []);
+                  e.target.value = "";
+                }}
+              />
+              <button
+                onClick={() => fileRef.current?.click()}
+                disabled={images.length >= MAX_IMAGES}
+                title={t("askAiAttachTitle", lang)}
+                className="m3-press"
+                style={{
+                  height: 32,
+                  padding: "0 12px 0 8px",
+                  borderRadius: 16,
+                  border: "none",
+                  background: "transparent",
+                  color: p.primary,
+                  opacity: images.length >= MAX_IMAGES ? 0.5 : 1,
+                  fontSize: 13,
+                  fontWeight: 600,
+                  cursor: images.length >= MAX_IMAGES ? "default" : "pointer",
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  flex: "0 0 auto",
+                }}
+              >
+                <Icon name="add_photo_alternate" size={18} />
+                {t("askAiAttach", lang)}
+              </button>
+              {images.map((src, i) => (
+                <div key={i} style={{ position: "relative", flex: "0 0 auto" }}>
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={src} alt="" style={{ display: "block", height: 64, maxWidth: 120, objectFit: "cover", borderRadius: 10, background: p.surface }} />
+                  <button
+                    onClick={() => onImages(images.filter((_, j) => j !== i))}
+                    title={t("askAiRemoveImage", lang)}
+                    className="m3-press"
+                    style={{
+                      position: "absolute",
+                      top: -6,
+                      right: -6,
+                      width: 22,
+                      height: 22,
+                      padding: 0,
+                      borderRadius: 11,
+                      border: "none",
+                      background: p.inverseSurface,
+                      color: p.inverseOnSurface,
+                      display: "grid",
+                      placeItems: "center",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <Icon name="close" size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              {/* the left of the row: where to paste after a copy, or how to unlock drafting */}
-              <span style={{ flex: 1, minWidth: 0, display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: copied === "ask" ? 600 : 400, color: copied === "ask" ? p.primary : p.onSurfaceVariant }}>
+              {/* the left of the row: where to paste after a copy, how to unlock drafting, or what the screenshots do */}
+              <span style={{ flex: 1, minWidth: 0, display: "inline-flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: copied === "ask" ? 600 : 400, color: copied === "ask" ? p.primary : images.length && noVision ? p.error : p.onSurfaceVariant }}>
                 {copied === "ask" ? (
                   <>
                     <Icon name="content_paste_go" size={18} />
@@ -221,12 +320,14 @@ export function ShareDialog({
                   </>
                 ) : !aiReady ? (
                   t("aiSetupHint", lang)
+                ) : images.length ? (
+                  t(noVision ? "askAiNoVision" : "askAiImagesHint", lang)
                 ) : null}
               </span>
               <div style={{ display: "inline-flex", gap: 3, flex: "0 0 auto" }}>
                 {pill(copied === "ask" ? "check" : "content_copy", copied === "ask" ? t("copied", lang) : t("askAiCopy", lang), copyAsk, { corners: "left", title: t("askAiCopyTitle", lang) })}
                 {aiReady
-                  ? pill("auto_awesome", t("askAiGenerate", lang), () => onDraft(idea), { primary: true, disabled: !idea.trim(), corners: "right", title: t("askAiGenerateTitle", lang) })
+                  ? pill("auto_awesome", t("askAiGenerate", lang), () => onDraft(idea, images), { primary: true, disabled: !idea.trim() && !images.length, corners: "right", title: t("askAiGenerateTitle", lang) })
                   : pill("key", t("aiSetup", lang), onSetupAi, { primary: true, corners: "right", title: t("aiSetupTitle", lang) })}
               </div>
             </div>

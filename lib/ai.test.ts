@@ -107,6 +107,63 @@ describe("complete on the openai-compatible path", () => {
   });
 });
 
+describe("complete with images", () => {
+  const webp = "data:image/webp;base64,UklGRgAAAA==";
+  const png = "data:image/png;base64,iVBORw0KGgo=";
+
+  it("sends image_url parts after the text on the openai-compatible path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(complete(settings(), "sys prompt", "user prompt", undefined, 4096, [webp, png])).resolves.toBe("ok");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.messages[0]).toEqual({ role: "system", content: "sys prompt" });
+    expect(body.messages[1]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "user prompt" },
+        { type: "image_url", image_url: { url: webp } },
+        { type: "image_url", image_url: { url: png } },
+      ],
+    });
+  });
+
+  it("sends base64 image blocks before the text on the claude path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ content: [{ type: "text", text: "hi" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(complete(settings({ provider: "claude" }), "sys prompt", "user prompt", undefined, 4096, [webp, png])).resolves.toBe("hi");
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.system).toBe("sys prompt");
+    expect(body.messages).toEqual([
+      {
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: "image/webp", data: "UklGRgAAAA==" } },
+          { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } },
+          { type: "text", text: "user prompt" },
+        ],
+      },
+    ]);
+  });
+
+  it("skips anything that is not a base64 image data URL on the claude path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ content: [{ type: "text", text: "hi" }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await complete(settings({ provider: "claude" }), "s", "u", undefined, 4096, ["https://example.test/a.png", "data:text/plain;base64,aGk=", webp]);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(body.messages[0].content).toEqual([
+      { type: "image", source: { type: "base64", media_type: "image/webp", data: "UklGRgAAAA==" } },
+      { type: "text", text: "u" },
+    ]);
+  });
+
+  it("keeps plain string content when no images are given", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    await complete(settings(), "s", "u", undefined, 4096, []);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).messages[1]).toEqual({ role: "user", content: "u" });
+  });
+});
+
 describe("complete input guards", () => {
   it.each([
     ["insecure", { baseUrl: "http://api.example.test" }],

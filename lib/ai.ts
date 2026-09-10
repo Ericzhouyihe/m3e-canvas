@@ -75,13 +75,21 @@ async function readError(res: Response): Promise<string> {
   return `${res.status} ${res.statusText}${detail ? `: ${detail.slice(0, 300)}` : ""}`;
 }
 
-/** one round trip: a system prompt and a user message in, the model's text out */
-export async function complete(s: AiSettings, system: string, user: string, signal?: AbortSignal, maxTokens = 4096): Promise<string> {
+/** the base64 payload and media type of a `data:image/…;base64,` URL; anything else is skipped */
+const claudeImage = (url: string) => {
+  const m = /^data:(image\/[a-z0-9.+-]+);base64,(.+)$/i.exec(url);
+  return m ? { type: "image", source: { type: "base64", media_type: m[1], data: m[2] } } : null;
+};
+
+/** one round trip: a system prompt and a user message in, the model's text out;
+ *  `images` are data URLs the model looks at along with the user message */
+export async function complete(s: AiSettings, system: string, user: string, signal?: AbortSignal, maxTokens = 4096, images: string[] = []): Promise<string> {
   const base = trimSlash(s.baseUrl);
   const model = s.model.trim();
   if (!model) throw new Error("model");
   if (!isSecureUrl(base)) throw new Error("insecure");
   if (s.provider === "claude") {
+    const content = images.length ? [...images.map(claudeImage).filter((b) => b !== null), { type: "text", text: user }] : user;
     const res = await fetch(`${base}/v1/messages`, {
       method: "POST",
       signal,
@@ -91,7 +99,7 @@ export async function complete(s: AiSettings, system: string, user: string, sign
         "anthropic-version": "2023-06-01",
         "anthropic-dangerous-direct-browser-access": "true",
       },
-      body: JSON.stringify({ model, max_tokens: Math.min(maxTokens, 8192), system, messages: [{ role: "user", content: user }] }),
+      body: JSON.stringify({ model, max_tokens: Math.min(maxTokens, 8192), system, messages: [{ role: "user", content }] }),
     });
     if (!res.ok) throw new Error(await readError(res));
     const j = await res.json();
@@ -104,6 +112,7 @@ export async function complete(s: AiSettings, system: string, user: string, sign
   }
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (s.key.trim()) headers.authorization = `Bearer ${s.key.trim()}`;
+  const content = images.length ? [{ type: "text", text: user }, ...images.map((url) => ({ type: "image_url", image_url: { url } }))] : user;
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
     signal,
@@ -115,7 +124,7 @@ export async function complete(s: AiSettings, system: string, user: string, sign
       ...(s.provider === "openai" ? {} : { max_tokens: Math.min(maxTokens, 8192) }),
       messages: [
         { role: "system", content: system },
-        { role: "user", content: user },
+        { role: "user", content },
       ],
     }),
   });
@@ -238,16 +247,27 @@ export function popHistory<V extends string, H extends string>(current: string |
 
 /** A whole design from an idea, drafted by the author's own model. `guide` is the same
  *  agent guide a coding agent reads (public/agent.md), so both paths follow one spec.
- *  The answer is the document itself; a link would be pointless here. */
-export async function draftDesign(s: AiSettings, guide: string, idea: string, lang: Lang, signal?: AbortSignal): Promise<Doc> {
+ *  The answer is the document itself; a link would be pointless here.
+ *  With `images` (screenshots of an existing app) the model replicates what they show;
+ *  the idea then reads as the author's notes. */
+export async function draftDesign(s: AiSettings, guide: string, idea: string, lang: Lang, signal?: AbortSignal, images: string[] = []): Promise<Doc> {
   const system = [
     "You draft M3E Canvas designs. Follow the guide below exactly.",
     "Reply with the JSON document only: no share link, no prose, no markdown fence, no explanation.",
     "",
     guide,
   ].join("\n");
-  const user = [`Sketch this app: ${idea.trim()}`, `Write every label, title and note in ${LANG_NAME[lang]}.`, "Three to five screens. Keep it simple."].join("\n");
-  const j = parseJsonObject(await complete(s, system, user, signal, 12000));
+  const user = images.length
+    ? [
+        "Replicate the app shown in the attached screenshot(s) as an M3E Canvas document: rebuild every screen the pictures show, keeping the layout, hierarchy, labels and content as close to the original as you can. Pick the closest Material 3 part for each element you see.",
+        idea.trim() ? `Notes from the author: ${idea.trim()}` : "",
+        `Keep the text as it appears in the screenshots; write every note in ${LANG_NAME[lang]}.`,
+        "One screen per screenshot when they show different screens. Keep it simple.",
+      ]
+        .filter((l) => l !== "")
+        .join("\n")
+    : [`Sketch this app: ${idea.trim()}`, `Write every label, title and note in ${LANG_NAME[lang]}.`, "Three to five screens. Keep it simple."].join("\n");
+  const j = parseJsonObject(await complete(s, system, user, signal, 12000, images));
   if (!isProject(j)) throw new Error("json");
   return j;
 }

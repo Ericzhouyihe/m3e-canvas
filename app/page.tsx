@@ -383,6 +383,8 @@ export default function Page() {
   const [shareOpen, setShareOpen] = useState(false);
   /** the idea typed into the "ask an AI" dialog; kept here so a failed draft does not lose it */
   const [ideaText, setIdeaText] = useState("");
+  /** screenshots attached beside the idea, as data URLs; kept here for the same reason */
+  const [ideaImages, setIdeaImages] = useState<string[]>([]);
   /** a model is drafting a design right now */
   const [draftBusy, setDraftBusy] = useState(false);
   /** the design a draft replaced, kept until the author keeps or undoes the draft */
@@ -2198,7 +2200,7 @@ export default function Page() {
     } catch {}
   };
 
-  const startDraft = async (idea: string) => {
+  const startDraft = async (idea: string, images: string[] = []) => {
     setShareOpen(false);
     setDraftBusy(true);
     try {
@@ -2207,7 +2209,7 @@ export default function Page() {
         if (!res.ok) throw new Error("guide");
         guideRef.current = await res.text();
       }
-      const next = await draftDesign(aiSettings, guideRef.current, idea, lang);
+      const next = await draftDesign(aiSettings, guideRef.current, idea, lang, undefined, images);
       arrive(next);
     } catch (e) {
       const m = e instanceof Error ? e.message : "";
@@ -4127,9 +4129,12 @@ export default function Page() {
           aiReady={aiReady}
           idea={ideaText}
           onIdea={setIdeaText}
+          images={ideaImages}
+          onImages={setIdeaImages}
+          noVision={aiSettings.provider === "deepseek"}
           open={shareOpen}
           onClose={() => setShareOpen(false)}
-          onDraft={(idea) => void startDraft(idea)}
+          onDraft={(idea, images) => void startDraft(idea, images)}
           onSetupAi={() => {
             setShareOpen(false);
             setLeftOpen(true);

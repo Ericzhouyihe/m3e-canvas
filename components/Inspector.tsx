@@ -63,6 +63,7 @@ import { Icon } from "./M3Node";
 import { ButtonRun, CardLayoutPicker, CornerIcon, Field, IconBtn, Section, Segmented, SizePresets, Slider, TextTokenChips, TidyButton, TidyState, Toggle, TokenChips } from "./ui";
 import { AiWriteBtn } from "./AiPanel";
 import { popHistory } from "@/lib/ai";
+import { readImage } from "@/lib/image";
 import { KIND_TEXT, SWIPE_TEXT, TRANSITION_TEXT, UIKey, t, useLang } from "@/lib/i18n";
 
 /** A text field for a web address: what is typed stays in the box, and only a complete
@@ -177,8 +178,6 @@ export function VariantSwatch({
   );
 }
 
-const MAX_IMAGE_PX = 1200;
-
 /** hover text for a width preset derived from the selected frame */
 export const widthPresetLabel = (v: number, frameWidth = PHONE_W): string | undefined =>
   v === frameWidth
@@ -219,28 +218,6 @@ export function FrameSizePicker({
       grow={!compact}
     />
   );
-}
-
-/** Downscale a picked file so the document stays small enough for localStorage. */
-function readImage(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const url = URL.createObjectURL(file);
-    const img = new Image();
-    img.onload = () => {
-      const s = Math.min(1, MAX_IMAGE_PX / Math.max(img.width, img.height));
-      const c = document.createElement("canvas");
-      c.width = Math.max(1, Math.round(img.width * s));
-      c.height = Math.max(1, Math.round(img.height * s));
-      c.getContext("2d")!.drawImage(img, 0, 0, c.width, c.height);
-      URL.revokeObjectURL(url);
-      resolve(c.toDataURL("image/webp", 0.86));
-    };
-    img.onerror = () => {
-      URL.revokeObjectURL(url);
-      reject(new Error("image"));
-    };
-    img.src = url;
-  });
 }
 
 function FrameChips({
